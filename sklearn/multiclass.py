@@ -94,6 +94,16 @@ def _check_estimator(estimator):
                          "decision_function or predict_proba!")
 
 
+def _make_complete_binary_code_mat(n_classes):
+    """Create a complete code matrix, e.g. all possible (non-trivial) partitions of the classes.
+    For k classes the matrix will have 2^(k-1) - 1 columns. This is the number of classifiers required to 
+    train the model. For this reason this is not appropriate for a large number of classes."""
+    n = 2**(n_classes - 1) - 1
+    M = np.zeros((n_classes,n))
+    M[1:,:] = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes - 1, n)).astype(float)
+    return M
+
+
 class _ConstantPredictor(BaseEstimator):
 
     def fit(self, X, y):
