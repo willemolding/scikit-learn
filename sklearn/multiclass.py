@@ -46,6 +46,7 @@ from .utils import check_random_state
 from .utils.validation import _num_samples
 from .utils.validation import check_consistent_length
 from .utils.validation import check_is_fitted
+from .utils.validation import check_array
 from .externals.joblib import Parallel
 from .externals.joblib import delayed
 
@@ -93,15 +94,19 @@ def _check_estimator(estimator):
         raise ValueError("The base estimator should implement "
                          "decision_function or predict_proba!")
 
+def _check_codebook(codebook, n_classes):
+    """Checks a codebook matrix to ensure it meets the requirements"""
+    codebook = check_array(codebook)
+    # ensure binary codebook. This will need to be changed if we decide to support ternery codes
+    codebook[codebook > 0.5] = 1
+    codebook[codebook <= 0.5] = 0
+    if codebook.shape[0] != n_classes:
+        raise ValueError(
+            "The codebook must have %d rows but %d rows were detected"
+            %(n_classes, codebook.shape[0]))
+    return codebook
 
-def _make_complete_binary_code_mat(n_classes):
-    """Create a complete code matrix, e.g. all possible (non-trivial) partitions of the classes.
-    For k classes the matrix will have 2^(k-1) - 1 columns. This is the number of classifiers required to 
-    train the model. For this reason this is not appropriate for a large number of classes."""
-    n = 2**(n_classes - 1) - 1
-    M = np.zeros((n_classes,n))
-    M[1:,:] = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes - 1, n)).astype(float)
-    return M
+
 
 
 class _ConstantPredictor(BaseEstimator):
@@ -511,6 +516,22 @@ def _ovr_decision_function(predictions, confidences, n_classes):
     return votes + sum_of_confidences * scale
 
 
+def _make_complete_binary_code_book(n_classes):
+    """Create a complete code matrix, e.g. all possible (non-trivial) partitions of the classes.
+    For k classes the matrix will have 2^(k-1) - 1 columns. This is the number of classifiers required to 
+    train the model. For this reason this is not appropriate for a large number of classes."""
+    n = 2**(n_classes - 1) - 1
+    M = np.zeros((n_classes,n))
+    M[1:,:] = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes - 1, n)).astype(float)
+    return M
+
+def _make_random_binary_code_book(n_classes, code_size):
+    """Randomly generate a binary code given the number of classes"""
+    M = random_state.random_sample((n_classes, code_size))
+    M[M > 0.5] = 1
+    M[M <= 0.5] = 0
+    return M
+
 class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     """(Error-Correcting) Output-Code multiclass strategy
 
@@ -531,11 +552,16 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         An estimator object implementing `fit` and one of `decision_function`
         or `predict_proba`.
 
+    code : string or array-like, (default='random')
+        If a string, this must be one of 'random' or 'complete'
+        If an array-like must be a binary code matrix of shape (n, n_classes)
+
     code_size : float
         Percentage of the number of classes to be used to create the code book.
         A number between 0 and 1 will require fewer classifiers than
         one-vs-the-rest. A number greater than 1 will require more classifiers
         than one-vs-the-rest.
+        Ignored for ``code=array-like and code='complete'``
 
     random_state : numpy.RandomState, optional
         The generator used to initialize the codebook. Defaults to
@@ -577,8 +603,9 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
        2008.
     """
 
-    def __init__(self, estimator, code_size=1.5, random_state=None, n_jobs=1):
+    def __init__(self, estimator,  code='random', code_size=1.5, random_state=None, n_jobs=1):
         self.estimator = estimator
+        self.code = code
         self.code_size = code_size
         self.random_state = random_state
         self.n_jobs = n_jobs
@@ -598,10 +625,6 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         -------
         self
         """
-        if self.code_size <= 0:
-            raise ValueError("code_size should be greater than 0, got {1}"
-                             "".format(self.code_size))
-
         _check_estimator(self.estimator)
         random_state = check_random_state(self.random_state)
 
@@ -609,10 +632,15 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         n_classes = self.classes_.shape[0]
         code_size_ = int(n_classes * self.code_size)
 
-        # FIXME: there are more elaborate methods than generating the codebook
-        # randomly.
-        self.code_book_ = random_state.random_sample((n_classes, code_size_))
-        self.code_book_[self.code_book_ > 0.5] = 1
+        if self.code == 'random':
+            if self.code_size <= 0:
+                raise ValueError("code_size should be greater than 0, got {1}"
+                                 "".format(self.code_size))
+            self.code_book_ = _make_random_binary_code_book(n_classes, code_size_)
+        elif self.code == 'complete':
+            self.code_book_ = _make_complete_binary_code_book(n_classes)
+        else:
+            self.code_book_ = _check_codebook(self.code, n_classes)
 
         if hasattr(self.estimator, "decision_function"):
             self.code_book_[self.code_book_ != 1] = -1
