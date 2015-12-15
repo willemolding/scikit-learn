@@ -525,7 +525,7 @@ def _make_complete_binary_code_book(n_classes):
     M[1:,:] = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes - 1, n)).astype(float)
     return M
 
-def _make_random_binary_code_book(n_classes, code_size):
+def _make_random_binary_code_book(n_classes, code_size, random_state):
     """Randomly generate a binary code given the number of classes"""
     M = random_state.random_sample((n_classes, code_size))
     M[M > 0.5] = 1
@@ -636,7 +636,7 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
             if self.code_size <= 0:
                 raise ValueError("code_size should be greater than 0, got {1}"
                                  "".format(self.code_size))
-            self.code_book_ = _make_random_binary_code_book(n_classes, code_size_)
+            self.code_book_ = _make_random_binary_code_book(n_classes, code_size_, random_state)
         elif self.code == 'complete':
             self.code_book_ = _make_complete_binary_code_book(n_classes)
         else:
