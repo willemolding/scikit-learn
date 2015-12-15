@@ -527,6 +527,35 @@ def test_ecoc_exceptions():
     ecoc = OutputCodeClassifier(LinearSVC(random_state=0))
     assert_raises(ValueError, ecoc.predict, [])
 
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0), 
+                                code='random', code_size=0)
+    assert_raises(ValueError, ecoc.predict, [])
+
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0), 
+                                code=None)
+    assert_raises(ValueError, ecoc.predict, [])
+
+
+def test_ecoc_complete_code():
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
+        code='complete')
+    ecoc.fit(iris.data, iris.target).predict(iris.data)
+    assert_equal(len(ecoc.estimators_), 2**(n_classes-1) - 1)
+
+
+def test_ecoc_custom_code():
+    codebook = np.zeros((n_classes - 1, 5))
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
+        code=codebook)
+    assert_raises(ValueError, ecoc.fit, 
+        iris.data, iris.target)
+
+    codebook = np.zeros((n_classes, 5))
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
+        code=codebook)
+    ecoc.fit(iris.data, iris.target).predict(iris.data)
+    assert_equal(len(ecoc.estimators_), 5)
+
 
 def test_ecoc_fit_predict():
     # A classifier which implements decision_function.
