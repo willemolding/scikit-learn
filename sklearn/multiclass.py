@@ -57,10 +57,13 @@ __all__ = [
 ]
 
 
-def _fit_binary(estimator, X, y, classes=None):
+def _fit_binary(estimator, X, y, classes=None, ternary=False):
     """Fit a single binary estimator."""
+    if ternary:
+        X = X[y != 0]
+        y = y[y != 0]
+
     unique_y = np.unique(y)
-    print unique_y
     if len(unique_y) == 1: #column contains all the same values
         if classes is not None:
             if y[0] == -1:
@@ -70,12 +73,10 @@ def _fit_binary(estimator, X, y, classes=None):
             warnings.warn("Label %s is present in all training examples." %
                           str(classes[c]))
         estimator = _ConstantPredictor().fit(X, unique_y)
-    elif len(unique_y) == 2: #binary column
+    else:
         estimator = clone(estimator)
         estimator.fit(X, y)
-    else: #ternary column. Some classes need to be ignored
-        estimator = clone(estimator)
-        estimator.fit(X[y != 0], y[y != 0])
+
     return estimator
 
 
@@ -101,9 +102,6 @@ def _check_estimator(estimator):
 def _check_codebook(codebook, n_classes):
     """Checks a codebook matrix to ensure it meets the requirements"""
     codebook = check_array(codebook)
-    # ensure binary codebook. This will need to be changed if we decide to support ternary codes
-    codebook[codebook > 0.5] = 1
-    codebook[codebook <= 0.5] = 0
     if codebook.shape[0] != n_classes:
         raise ValueError(
             "The codebook must have %d rows but %d rows were detected"
@@ -698,9 +696,8 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
             self.code_book_ = _make_complete_code_book(n_classes, self.ternary)
         else:
             self.code_book_ = _check_codebook(self.code, n_classes)
-
-        self.code_book_[self.code_book_ > 0] = 1
-        self.code_book_[self.code_book_ < 0] = -1
+            if len(np.unique(self.code_book_)) >= 3:
+                self.ternary = True
 
         classes_index = dict((c, i) for i, c in enumerate(self.classes_))
 
@@ -708,12 +705,12 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
                       for i in range(X.shape[0])], dtype=np.int)
 
         self.estimators_ = Parallel(n_jobs=self.n_jobs)(
-            delayed(_fit_binary)(self.estimator, X, Y[:, i])
+            delayed(_fit_binary)(self.estimator, X, Y[:, i], ternary=self.ternary)
             for i in range(Y.shape[1]))
 
         return self
 
-    def predict(self, X, loss='hamming'):
+    def predict(self, X, loss='soft_hamming'):
         """Predict multi-class targets using underlying estimators.
 
         Parameters
