@@ -60,7 +60,8 @@ __all__ = [
 def _fit_binary(estimator, X, y, classes=None):
     """Fit a single binary estimator."""
     unique_y = np.unique(y)
-    if len(unique_y) == 1:
+    print unique_y
+    if len(unique_y) == 1: #column contains all the same values
         if classes is not None:
             if y[0] == -1:
                 c = 0
@@ -69,9 +70,12 @@ def _fit_binary(estimator, X, y, classes=None):
             warnings.warn("Label %s is present in all training examples." %
                           str(classes[c]))
         estimator = _ConstantPredictor().fit(X, unique_y)
-    else:
+    elif len(unique_y) == 2: #binary column
         estimator = clone(estimator)
         estimator.fit(X, y)
+    else: #ternary column. Some classes need to be ignored
+        estimator = clone(estimator)
+        estimator.fit(X[y != 0], y[y != 0])
     return estimator
 
 
@@ -97,7 +101,7 @@ def _check_estimator(estimator):
 def _check_codebook(codebook, n_classes):
     """Checks a codebook matrix to ensure it meets the requirements"""
     codebook = check_array(codebook)
-    # ensure binary codebook. This will need to be changed if we decide to support ternery codes
+    # ensure binary codebook. This will need to be changed if we decide to support ternary codes
     codebook[codebook > 0.5] = 1
     codebook[codebook <= 0.5] = 0
     if codebook.shape[0] != n_classes:
@@ -516,20 +520,38 @@ def _ovr_decision_function(predictions, confidences, n_classes):
     return votes + sum_of_confidences * scale
 
 
-def _make_complete_binary_code_book(n_classes):
+def _make_complete_code_book(n_classes, ternary=False):
     """Create a complete code matrix, e.g. all possible (non-trivial) partitions of the classes.
-    For k classes the matrix will have 2^(k-1) - 1 columns. This is the number of classifiers required to 
-    train the model. For this reason this is not appropriate for a large number of classes."""
-    n = 2**(n_classes - 1) - 1
-    M = np.zeros((n_classes,n))
-    M[1:,:] = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes - 1, n)).astype(float)
+
+    For a binary code with k classes the matrix will have 2^(k-1) - 1 columns. 
+
+    For a ternary code with k classes the matrix will have (3^k - 2^(k+1) + 1) / 2 columns. 
+
+    This method is not appropriate for a large number of classes."""
+    if ternary is False:
+        n = 2**(n_classes - 1) - 1
+        M = np.zeros((n_classes,n))
+        M[1:,:] = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes - 1, n))
+        M = M*2 - 1
+    else:
+        # create a matrix of all non-trivial partitions including inversions
+        P = np.fromfunction(lambda i, j: (j+1) // (2**(i)) % 2, (n_classes, 2**(n_classes) - 2))
+
+        # For each pair of partitions that are non-overlapping assign half to -1, half to +1 and the rest to 0
+        M = []
+        for j1 in range(P.shape[1]):
+            for j2 in range(j1+1, P.shape[1]):
+                if all(P[:,j1] + P[:,j2] < 2): #if the sets are non-overlapping
+                    M.append( P[:,j1] + -P[:,j2])
+        M = np.array(M).T
     return M
 
-def _make_random_binary_code_book(n_classes, code_size, random_state):
+def _make_random_code_book(n_classes, code_size, ternary=False, random_state=None):
     """Randomly generate a binary code given the number of classes"""
-    M = random_state.random_sample((n_classes, code_size))
-    M[M > 0.5] = 1
-    M[M <= 0.5] = 0
+    if ternary is False:
+        M = random_state.random_integers(0, 1, size=(n_classes, code_size))*2 - 1
+    else:
+        M = random_state.random_integers(0, 2, size=(n_classes, code_size)) - 1
     return M
 
 
@@ -562,7 +584,7 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     for compressing the model (0 < code_size < 1) or for making the model more
     robust to errors (code_size > 1). 
 
-    This also supports the use of ternery codes as described in [4]. Each codeword 
+    This also supports the use of ternary codes as described in [4]. Each codeword 
     comprised of either [-1, 0, +1] representing positive and negetive classification and
     also 0 which implies that the particular base class is not considered in the comparison.
     This representation has advantages in that it unifies Output-code and One-vs-One methods.
@@ -588,6 +610,9 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         one-vs-the-rest. A number greater than 1 will require more classifiers
         than one-vs-the-rest.
         Ignored for ``code=array-like and code='complete'``
+
+    ternary : boolean, default False
+        Whether to use ternery codes when calculating the random or complete code
 
     random_state : numpy.RandomState, optional
         The generator used to initialize the codebook. Defaults to
@@ -634,10 +659,11 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
        2001.
     """
 
-    def __init__(self, estimator,  code='random', code_size=1.5, random_state=None, n_jobs=1):
+    def __init__(self, estimator,  code='random', ternary=False, code_size=1.5, random_state=None, n_jobs=1):
         self.estimator = estimator
         self.code = code
         self.code_size = code_size
+        self.ternary = ternary
         self.random_state = random_state
         self.n_jobs = n_jobs
 
@@ -661,22 +687,20 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
 
         self.classes_ = np.unique(y)
         n_classes = self.classes_.shape[0]
-        code_size_ = int(n_classes * self.code_size)
 
         if self.code is 'random':
             if self.code_size <= 0:
                 raise ValueError("code_size should be greater than 0, got %d"
                                  ""% self.code_size)
-            self.code_book_ = _make_random_binary_code_book(n_classes, code_size_, random_state)
+            code_size_ = int(n_classes * self.code_size)
+            self.code_book_ = _make_random_code_book(n_classes, code_size_, self.ternary, random_state)
         elif self.code is 'complete':
-            self.code_book_ = _make_complete_binary_code_book(n_classes)
+            self.code_book_ = _make_complete_code_book(n_classes, self.ternary)
         else:
             self.code_book_ = _check_codebook(self.code, n_classes)
 
-        if hasattr(self.estimator, "decision_function"):
-            self.code_book_[self.code_book_ != 1] = -1
-        else:
-            self.code_book_[self.code_book_ != 1] = 0
+        self.code_book_[self.code_book_ > 0] = 1
+        self.code_book_[self.code_book_ < 0] = -1
 
         classes_index = dict((c, i) for i, c in enumerate(self.classes_))
 
@@ -697,10 +721,11 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         X : (sparse) array-like, shape = [n_samples, n_features]
             Data.
 
-        loss : str or callable
+        loss : str or callable, default 'soft_hamming'
             Valid pre-defined loss functions are:
             ['hamming', 'soft_hamming', 'log', 'exp', 'logistic']
-            Can also be a callable function that takes 
+            Can also be a callable function that takes two binary or ternary vectors 
+            and returns a scaler loss
 
         Returns
         -------
@@ -723,7 +748,8 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
 
         Y = np.array([_predict_binary(e, X) for e in self.estimators_]).T
 
-        pred = pairwise_distances_argmin(Y, self.code_book_, 
-            metric=lambda x, y : np.sum(loss_func(x,y)))
+        def metric(x, y) : return np.sum(loss_func(x,y))
+
+        pred = pairwise_distances_argmin(Y, self.code_book_, metric=metric)
 
         return self.classes_[pred]
