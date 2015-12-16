@@ -41,7 +41,7 @@ import scipy.sparse as sp
 from .base import BaseEstimator, ClassifierMixin, clone, is_classifier
 from .base import MetaEstimatorMixin, is_regressor
 from .preprocessing import LabelBinarizer
-from .metrics.pairwise import euclidean_distances
+from .metrics.pairwise import pairwise_distances_argmin
 from .utils import check_random_state
 from .utils.validation import _num_samples
 from .utils.validation import check_consistent_length
@@ -532,6 +532,24 @@ def _make_random_binary_code_book(n_classes, code_size, random_state):
     M[M <= 0.5] = 0
     return M
 
+
+
+
+def hamming_loss(x, y): return (1. - np.sign(x*y))/2.
+def soft_hamming(x, y): return (1. - x*y)/2.
+def log_loss(x, y): return np.log(1. + np.exp(-2.*x*y))
+def exp_loss(x, y): return np.exp(-x*y)
+def logistic_loss(x, y) : return 1./(1. + np.exp(2*x*y))
+
+
+LOSS_FUNCTIONS = {
+    'hamming' : hamming_loss,
+    'soft_hamming' : soft_hamming,
+    'log' : log_loss,
+    'exp' : exp_loss,
+    'logistic' : logistic_loss}   
+
+
 class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     """(Error-Correcting) Output-Code multiclass strategy
 
@@ -542,7 +560,15 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     closest to the points is chosen. The main advantage of these strategies is
     that the number of classifiers used can be controlled by the user, either
     for compressing the model (0 < code_size < 1) or for making the model more
-    robust to errors (code_size > 1). See the documentation for more details.
+    robust to errors (code_size > 1). 
+
+    This also supports the use of ternery codes as described in [4]. Each codeword 
+    comprised of either [-1, 0, +1] representing positive and negetive classification and
+    also 0 which implies that the particular base class is not considered in the comparison.
+    This representation has advantages in that it unifies Output-code and One-vs-One methods.
+    It also allows for a greater number of possible comparisons.
+
+    See the documentation for more details.
 
     Read more in the :ref:`User Guide <ecoc>`.
 
@@ -601,6 +627,11 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
     .. [3] "The Elements of Statistical Learning",
        Hastie T., Tibshirani R., Friedman J., page 606 (second-edition)
        2008.
+
+    .. [4] "Reducing multiclass to binary: A unifying approach for margin classifiers",
+       Allwein, E. L.; Schapire, R. E. & Singer, Y.,
+       The Journal of Machine Learning Research, JMLR. org, 2001, 1, 113-141,
+       2001.
     """
 
     def __init__(self, estimator,  code='random', code_size=1.5, random_state=None, n_jobs=1):
@@ -632,12 +663,12 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         n_classes = self.classes_.shape[0]
         code_size_ = int(n_classes * self.code_size)
 
-        if self.code == 'random':
+        if self.code is 'random':
             if self.code_size <= 0:
-                raise ValueError("code_size should be greater than 0, got {1}"
-                                 "".format(self.code_size))
+                raise ValueError("code_size should be greater than 0, got %d"
+                                 ""% self.code_size)
             self.code_book_ = _make_random_binary_code_book(n_classes, code_size_, random_state)
-        elif self.code == 'complete':
+        elif self.code is 'complete':
             self.code_book_ = _make_complete_binary_code_book(n_classes)
         else:
             self.code_book_ = _check_codebook(self.code, n_classes)
@@ -658,7 +689,7 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
 
         return self
 
-    def predict(self, X):
+    def predict(self, X, loss='hamming'):
         """Predict multi-class targets using underlying estimators.
 
         Parameters
@@ -666,12 +697,33 @@ class OutputCodeClassifier(BaseEstimator, ClassifierMixin, MetaEstimatorMixin):
         X : (sparse) array-like, shape = [n_samples, n_features]
             Data.
 
+        loss : str or callable
+            Valid pre-defined loss functions are:
+            ['hamming', 'soft_hamming', 'log', 'exp', 'logistic']
+            Can also be a callable function that takes 
+
         Returns
         -------
         y : numpy array of shape [n_samples]
             Predicted multi-class targets.
         """
         check_is_fitted(self, 'estimators_')
+
+        if loss in LOSS_FUNCTIONS:
+            loss_func = LOSS_FUNCTIONS[loss]
+        elif callable(loss):
+            loss_func = loss
+        else:
+            raise ValueError("'loss' must be a string or a callable")
+
+        if not hasattr(self.estimator, "decision_function") \
+            and loss in ('log', 'exp', 'logistic'):
+            raise ValueError("The loss function '%s' is not supported"
+                " for classifiers that do not implement decision_function." % loss) 
+
         Y = np.array([_predict_binary(e, X) for e in self.estimators_]).T
-        pred = euclidean_distances(Y, self.code_book_).argmin(axis=1)
+
+        pred = pairwise_distances_argmin(Y, self.code_book_, 
+            metric=lambda x, y : np.sum(loss_func(x,y)))
+
         return self.classes_[pred]
