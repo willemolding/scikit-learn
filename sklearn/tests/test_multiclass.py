@@ -529,11 +529,17 @@ def test_ecoc_exceptions():
 
     ecoc = OutputCodeClassifier(LinearSVC(random_state=0), 
                                 code='random', code_size=0)
-    assert_raises(ValueError, ecoc.predict, [])
+    assert_raises(ValueError, ecoc.fit, 
+        iris.data, iris.target)
 
     ecoc = OutputCodeClassifier(LinearSVC(random_state=0), 
                                 code=None)
-    assert_raises(ValueError, ecoc.predict, [])
+    assert_raises(ValueError, ecoc.fit, 
+        iris.data, iris.target)
+
+    ecoc = OutputCodeClassifier(MultinomialNB())
+    assert_raises(ValueError, ecoc.fit(iris.data, iris.target).predict, 
+        iris.data, 'log')
 
 
 def test_ecoc_complete_code():
@@ -569,6 +575,45 @@ def test_ecoc_fit_predict():
     ecoc.fit(iris.data, iris.target).predict(iris.data)
     assert_equal(len(ecoc.estimators_), n_classes * 2)
 
+    # # Using ternary complete codes
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0), code='complete', code_size=2, ternary=False, random_state=0)
+    ecoc.fit(iris.data, iris.target).predict(iris.data)
+
+    # # Using ternary random codes
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0), code='random', ternary=True, random_state=0)
+    ecoc.fit(iris.data, iris.target).predict(iris.data)
+
+def test_ecoc_compare_ovr():
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
+                                code=np.eye(n_classes))
+    pred_ecoc = ecoc.fit(iris.data, iris.target).predict(iris.data, loss='soft_hamming')
+
+    ovr = OneVsRestClassifier(LinearSVC(random_state=0))
+    pred_ovr = ovr.fit(iris.data, iris.target).predict(iris.data)
+
+    assert_array_equal(pred_ecoc, pred_ovr)
+
+def test_ecoc_compare_ovo():
+
+    def ovo_code_mat(n_classes):
+        # creates a ternary code matrix that simulates ovo
+        n = (n_classes * (n_classes - 1))/2
+        indices = np.tril_indices(n_classes,k=-1)
+        M = np.zeros((n_classes,n))
+        for j in range(n):
+            M[indices[0][j],j] = -1
+            M[indices[1][j],j] = +1
+        return M
+
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
+                                code=ovo_code_mat(n_classes))
+    pred_ecoc = ecoc.fit(iris.data, iris.target).predict(iris.data, loss='hamming')
+
+    ovo = OneVsOneClassifier(LinearSVC(random_state=0))
+    pred_ovo = ovo.fit(iris.data, iris.target).predict(iris.data)
+
+    assert_array_equal(pred_ecoc, pred_ovo)
+
 
 def test_ecoc_gridsearch():
     ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
@@ -578,3 +623,17 @@ def test_ecoc_gridsearch():
     cv.fit(iris.data, iris.target)
     best_C = cv.best_estimator_.estimators_[0].C
     assert_true(best_C in Cs)
+
+
+def test_ecoc_loss_functions():
+    ecoc = OutputCodeClassifier(LinearSVC(random_state=0),
+                                code_size=2, random_state=0)
+    clf = ecoc.fit(iris.data, iris.target)
+    clf.predict(iris.data, loss='hamming')
+    clf.predict(iris.data, loss='soft_hamming')
+    clf.predict(iris.data, loss='log')
+    clf.predict(iris.data, loss='exp')
+    clf.predict(iris.data, loss='logistic')
+
+
+
